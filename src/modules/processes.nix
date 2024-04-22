@@ -70,7 +70,7 @@ in
               default = true;
             };
             unix-socket = lib.mkOption {
-              type = types.str;
+              type = types.str; # TODO: should be path?
               description = "The path to the Unix socket.";
               default = "${config.devenv.runtime}/pc.sock";
               defaultText = lib.literalExpression "\${config.devenv.runtime}/pc.sock";
