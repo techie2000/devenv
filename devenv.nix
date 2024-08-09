@@ -3,6 +3,7 @@
 
   packages = [
     pkgs.cairo
+    pkgs.git
     pkgs.xorg.libxcb
     pkgs.yaml2json
     pkgs.tesh
@@ -33,7 +34,7 @@
 
   processes = {
     docs.exec = "mkdocs serve";
-    tailwind.exec = "watchexec -e html,css,js ${lib.getExe pkgs.tailwindcss} build docs/assets/extra.css -o docs/assets/output.css";
+    tailwind.exec = "watchexec -e html,css,js devenv-generate-doc-css";
   };
 
   scripts.devenv-test-cli = {
@@ -61,7 +62,7 @@
         nix flake init --template ''${DEVENV_ROOT}#simple
         nix flake update \
           --override-input devenv ''${DEVENV_ROOT}
-        nix develop --accept-flake-config --impure --command echo nix-develop started succesfully |& tee ./console
+        nix develop --accept-flake-config --no-pure-eval --command echo nix-develop started succesfully |& tee ./console
         grep -F 'nix-develop started succesfully' <./console
         grep -F "$(${lib.getExe pkgs.hello})" <./console
 
@@ -93,12 +94,18 @@
       rm -rf "$tmp"
     '';
   };
+  scripts."devenv-generate-doc-css" = {
+    description = "Generate CSS for the docs.";
+    exec = ''
+      ${lib.getExe pkgs.tailwindcss} build -i docs/assets/extra.css -o docs/assets/output.css
+    '';
+  };
   scripts."devenv-generate-doc-options" = {
     description = "Generate option docs.";
     exec = ''
       set -e
       output_file=docs/reference/options.md
-      options=$(nix build --impure --extra-experimental-features 'flakes nix-command' --show-trace --print-out-paths --no-link '.#devenv-docs-options')
+      options=$(nix build --accept-flake-config --no-pure-eval --extra-experimental-features 'flakes nix-command' --show-trace --print-out-paths --no-link '.#devenv-docs-options')
       echo "# devenv.nix options" > $output_file
       echo >> $output_file
       cat $options >> $output_file
@@ -149,10 +156,14 @@
       MD033 = false;
       MD034 = false;
     };
-    generate-css = {
+    generate-doc-css = {
       enable = true;
-      name = "generate-css";
-      entry = "${lib.getExe pkgs.tailwindcss} build docs/assets/extra.css -o docs/assets/output.css";
+      name = "generate-doc-css";
+      # Copied from devenv-generate-doc-css
+      # In CI, the auto-commit action doesn't run in the shell, so it can't reuse our scripts.
+      # And the following command is curently too slow to be a pre-commit command.
+      # entry = "devenv shell devenv-generate-doc-css";
+      entry = "${lib.getExe pkgs.tailwindcss} build -i docs/assets/extra.css -o docs/assets/output.css";
     };
   };
 }

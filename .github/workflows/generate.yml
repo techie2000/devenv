@@ -20,7 +20,7 @@ jobs:
     - uses: cachix/cachix-action@v15
       with:
         name: devenv
-    - run: nix profile install .
+    - run: nix profile install . -L --accept-flake-config
 
     - name: Generate doc options
       run: devenv shell devenv-generate-doc-options

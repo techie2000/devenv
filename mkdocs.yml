@@ -17,21 +17,32 @@ theme:
     primary: white
     accent: '#FBFBFB'
   features:
-    - tabs
-    - instant
-    - search.share
-    - navigation.tabs
-    - navigation.tabs.sticky
-    - navigation.expand
-    - navigation.instant
-    - navigation.tracking
+    - content.action.edit
     - content.code.annotate
     - content.code.copy
+
+    # Lazily process components on the page, like code blocks.
+    # Mounting all of code blocks on the reference doc page takes several
+    # seconds, even on a powerful machine.
+    - content.lazy
+
     - content.tabs.link
-    - content.action.edit
+    - instant
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.instant.progress
+    - navigation.path
+    - navigation.sections
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.top
+    - navigation.tracking
+    - search.share
+    - tabs
+    - toc.follow
 nav:
   - Home: index.md
-  - Documentation:
+  - Guide:
     - Getting Started: getting-started.md
     - Files And Variables: files-and-variables.md
     - Writing devenv.nix:
@@ -65,10 +76,11 @@ nav:
     - Editor Support:
       - VSCode: editor-support/vscode.md
       - PhpStorm: editor-support/phpstorm.md
+      - Zed: editor-support/zed.md
     - Roadmap: roadmap.md
-    - Reference:
-      - devenv.yaml: reference/yaml-options.md
-      - devenv.nix: reference/options.md
+  - Reference:
+    - devenv.nix: reference/options.md
+    - devenv.yaml: reference/yaml-options.md
   - Blog:
       - blog/index.md
   - Community:
