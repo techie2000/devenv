@@ -1,5 +1,12 @@
 #!/usr/bin/env bash
 
 set -xe
-pip install -r requirements.txt
-mkdocs build
+
+pushd docs
+
+npm ci
+npm run build
+
+popd
+
+mv docs/dist site

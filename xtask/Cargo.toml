@@ -1,11 +1,14 @@
 [package]
 name = "xtask"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 clap.workspace = true
-clap_complete = "4.5.7"
-clap_mangen = "0.2.22"
-devenv = { path = "../devenv" }
+clap_complete.workspace = true
+clap_mangen.workspace = true
+devenv.workspace = true
 miette.workspace = true
+schemars.workspace = true
+serde_json.workspace = true

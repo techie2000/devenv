@@ -1,4 +1,7 @@
-wait_for_port 2345
+set -e
+
+wait_for_processes
+wait_for_port "$PGPORT"
 psql postgres -c '\q' &> /dev/null
 
 # Check the exit status of the psql command

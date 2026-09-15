@@ -5,15 +5,26 @@ with lib;
 let
   cfg = config.services.opensearch;
 
+  # Port allocation
+  baseHttpPort = cfg.settings."http.port";
+  baseTransportPort = cfg.settings."transport.port";
+  allocatedHttpPort = config.processes.opensearch.ports.http.value;
+  allocatedTransportPort = config.processes.opensearch.ports.transport.value;
+
+  # Override settings with allocated ports
+  settingsWithPorts = cfg.settings // {
+    "http.port" = allocatedHttpPort;
+    "transport.port" = allocatedTransportPort;
+  };
+
   settingsFormat = pkgs.formats.yaml { };
-  opensearchYml = settingsFormat.generate "opensearch.yml" cfg.settings;
+  opensearchYml = settingsFormat.generate "opensearch.yml" settingsWithPorts;
 
   loggingConfigFilename = "log4j2.properties";
   loggingConfigFile = pkgs.writeTextFile {
     name = loggingConfigFilename;
     text = cfg.logging;
   };
-
 
   startScript = pkgs.writeShellScript "opensearch-startup" ''
     set -e
@@ -25,13 +36,16 @@ let
 
     # Install plugins
     rm -rf "$OPENSEARCH_DATA/plugins"
-    mkdir -p "$OPENSEARCH_DATA/plugins"
+    ln -sf "${cfg.package}/plugins" "$OPENSEARCH_DATA/plugins"
 
     rm -f "$OPENSEARCH_DATA/lib"
     ln -sf ${cfg.package}/lib "$OPENSEARCH_DATA/lib"
 
     rm -f "$OPENSEARCH_DATA/modules"
     ln -sf ${cfg.package}/modules "$OPENSEARCH_DATA/modules"
+
+    rm -f "$OPENSEARCH_DATA/agent"
+    ln -sf ${cfg.package}/agent "$OPENSEARCH_DATA/agent"
 
     # Create config dir
     mkdir -m 0700 -p "$OPENSEARCH_DATA/config"
@@ -58,9 +72,9 @@ let
 in
 {
   options.services.opensearch = {
-    enable = mkEnableOption (lib.mdDoc "OpenSearch");
+    enable = mkEnableOption "OpenSearch";
 
-    package = lib.mkPackageOptionMD pkgs "OpenSearch" {
+    package = lib.mkPackageOption pkgs "OpenSearch" {
       default = [ "opensearch" ];
     };
 
@@ -71,7 +85,7 @@ in
         options."network.host" = lib.mkOption {
           type = lib.types.str;
           default = "127.0.0.1";
-          description = lib.mdDoc ''
+          description = ''
             Which port this service should listen on.
           '';
         };
@@ -79,7 +93,7 @@ in
         options."cluster.name" = lib.mkOption {
           type = lib.types.str;
           default = "opensearch";
-          description = lib.mdDoc ''
+          description = ''
             The name of the cluster.
           '';
         };
@@ -87,7 +101,7 @@ in
         options."discovery.type" = lib.mkOption {
           type = lib.types.str;
           default = "single-node";
-          description = lib.mdDoc ''
+          description = ''
             The type of discovery to use.
           '';
         };
@@ -95,7 +109,7 @@ in
         options."http.port" = lib.mkOption {
           type = lib.types.port;
           default = 9200;
-          description = lib.mdDoc ''
+          description = ''
             The port to listen on for HTTP traffic.
           '';
         };
@@ -103,21 +117,32 @@ in
         options."transport.port" = lib.mkOption {
           type = lib.types.port;
           default = 9300;
-          description = lib.mdDoc ''
+          description = ''
             The port to listen on for transport traffic.
+          '';
+        };
+
+        options."plugins.security.disabled" = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = ''
+            Whether to disable the security plugin. When set to false, SSL configuration is required.
+            To enable SSL, set `plugins.security.ssl.transport.keystore_filepath` or both
+            `plugins.security.ssl.transport.server.pemcert_filepath` and
+            `plugins.security.ssl.transport.client.pemcert_filepath`.
           '';
         };
       };
 
       default = { };
 
-      description = lib.mdDoc ''
+      description = ''
         OpenSearch configuration.
       '';
     };
 
     logging = lib.mkOption {
-      description = lib.mdDoc "OpenSearch logging configuration.";
+      description = "OpenSearch logging configuration.";
 
       default = ''
         logger.action.name = org.opensearch.action
@@ -151,19 +176,15 @@ in
     env.OPENSEARCH_DATA = config.env.DEVENV_STATE + "/opensearch";
 
     processes.opensearch = {
+      ports.http.allocate = baseHttpPort;
+      ports.transport.allocate = baseTransportPort;
       exec = "${startScript}";
 
-      process-compose = {
-        readiness_probe = {
-          exec.command = "${pkgs.curl}/bin/curl -f -k http://${cfg.settings."network.host"}:${toString cfg.settings."http.port"}";
-          initial_delay_seconds = 15;
-          period_seconds = 10;
-          timeout_seconds = 2;
-          success_threshold = 1;
-          failure_threshold = 5;
-        };
-
-        availability.restart = "on_failure";
+      ready = {
+        exec = "${pkgs.curl}/bin/curl -f -k http://${cfg.settings."network.host"}:${toString allocatedHttpPort}";
+        initial_delay = 2;
+        probe_timeout = 2;
+        failure_threshold = 5;
       };
     };
   };

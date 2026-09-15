@@ -1,15 +1,26 @@
-devenvFlake: { flake-parts-lib, lib, inputs, ... }: {
-  options.perSystem = flake-parts-lib.mkPerSystemOption ({ config, pkgs, system, ... }:
+devenvFlake:
+{
+  flake-parts-lib,
+  lib,
+  inputs,
+  ...
+}:
+{
+  options.perSystem = flake-parts-lib.mkPerSystemOption (
+    {
+      config,
+      pkgs,
+      system,
+      ...
+    }:
 
     let
-      devenvType = (devenvFlake.lib.mkEval {
-        inherit inputs pkgs;
-        modules = [{
-          config = {
-            # Add flake-parts-specific config here if necessary
-          };
-        }] ++ config.devenv.modules;
-      }).type;
+      devenvType =
+        (devenvFlake.lib.mkEval {
+          inherit inputs lib pkgs;
+          # Add flake-parts-specific config here if necessary
+          inherit (config.devenv) modules;
+        }).type;
 
       shellPrefix = shellName: if shellName == "default" then "" else "${shellName}-";
     in
@@ -21,7 +32,9 @@ devenvFlake: { flake-parts-lib, lib, inputs, ... }: {
           Extra modules to import into every shell.
           Allows flakeModules to add options to devenv for example.
         '';
-        default = [];
+        default = [
+          devenvFlake.flakeModules.readDevenvRoot
+        ];
       };
       options.devenv.shells = lib.mkOption {
         type = lib.types.lazyAttrsOf devenvType;
@@ -47,20 +60,34 @@ devenvFlake: { flake-parts-lib, lib, inputs, ... }: {
       };
       config.devShells = lib.mapAttrs (_name: devenv: devenv.shell) config.devenv.shells;
 
+      # Deprecated packages
+      # These were used to wire up commands in the devenv shim and are no longer necessary.
       config.packages =
-        lib.concatMapAttrs
-          (shellName: devenv:
-            (lib.concatMapAttrs
-              (containerName: container:
-                { "${shellPrefix shellName}container-${containerName}" = container.derivation; }
-              )
-              devenv.containers
-            ) // {
-              "${shellPrefix shellName}devenv-up" = devenv.procfileScript;
-            }
-          )
-          config.devenv.shells;
-    });
+        let
+          deprecate =
+            name: value:
+            lib.warn "The package '${name}' is deprecated. Use the corresponding `devenv <cmd>` commands." value;
+        in
+        lib.optionalAttrs (lib.hasSuffix "-linux" system) (
+          lib.concatMapAttrs (
+            shellName: devenv:
+            # TODO(sander): container support is undocumented and is specific to flake-parts, ie. the CLI shim doesn't support this.
+            # Official support is complicated by `getInput` throwing errors and Nix not being able to properly try/catch errors with `tryEval`.
+            # Until this is fixed, these outputs will remain.
+            lib.concatMapAttrs (containerName: container: {
+              "${shellPrefix shellName}container-${containerName}" = container.derivation;
+            }) devenv.containers
+          ) config.devenv.shells
+        )
+        // lib.concatMapAttrs (
+          shellName: devenv:
+          lib.mapAttrs deprecate {
+            "${shellPrefix shellName}devenv-up" = devenv.procfileScript;
+            "${shellPrefix shellName}devenv-test" = devenv.test;
+          }
+        ) config.devenv.shells;
+    }
+  );
 
   # the extra parameter before the module make this module behave like an
   # anonymous module, so we need to manually identify the file, for better

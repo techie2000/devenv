@@ -1,22 +1,34 @@
-{ pkgs, lib, config, ... }:
+{ pkgs
+, lib
+, config
+, ...
+}:
 
 let
   cfg = config.services.temporal;
   types = lib.types;
 
+  # Port allocation
+  basePort = cfg.port;
+  baseUiPort = cfg.ui.port;
+  allocatedPort = config.processes.temporal.ports.main.value;
+  allocatedUiPort = config.processes.temporal.ports.ui.value;
+
   databaseFile = config.env.DEVENV_STATE + "/temporal.sqlite";
 
-  commandArgs = [
-    "--log-format=pretty"
-    "--ip=${cfg.ip}"
-    "--port=${toString cfg.port}"
-    "--headless=${lib.boolToString (!cfg.ui.enable)}"
-    "--ui-ip=${cfg.ui.ip}"
-    "--ui-port=${toString cfg.ui.port}"
-  ] ++
-  (lib.forEach cfg.namespaces (namespace: "--namespace=${namespace}")) ++
-  (lib.optionals (!cfg.state.ephemeral) [ "--db-filename=${databaseFile}" ]) ++
-  (lib.mapAttrsToList (name: value: "--sqlite-pragma ${name}=${value}") cfg.state.sqlite-pragma);
+  commandArgs =
+    [
+      "--log-format=pretty"
+      "--ip=${cfg.ip}"
+      "--port=${toString allocatedPort}"
+      "--headless=${lib.boolToString (!cfg.ui.enable)}"
+      "--ui-ip=${cfg.ui.ip}"
+      "--ui-port=${toString allocatedUiPort}"
+    ]
+    ++ (lib.forEach cfg.namespaces (namespace: "--namespace=${namespace}"))
+    ++ (lib.optionals (!cfg.state.ephemeral) [ "--db-filename=${databaseFile}" ])
+    ++ (lib.mapAttrsToList (name: value: "--sqlite-pragma ${name}=${value}") cfg.state.sqlite-pragma)
+    ++ (lib.mapAttrsToList (name: value: "--dynamic-config-value ${name}=${value}") cfg.dynamicConfig);
 in
 {
   options.services.temporal = {
@@ -58,8 +70,7 @@ in
 
           port = lib.mkOption {
             type = types.port;
-            default = cfg.port + 1000;
-            defaultText = lib.literalMD "[`services.temporal.port`](#servicestemporalport) + 1000";
+            default = 8233;
             description = "Port for the Web UI.";
           };
         };
@@ -101,10 +112,24 @@ in
       default = { };
       description = "State configuration.";
     };
+
+    dynamicConfig = lib.mkOption {
+      type = types.attrsOf types.str;
+      default = { };
+      description = "Dynamic configuration for the Temporal server.";
+      example = {
+        "frontend.rps" = "2500";
+        "frontend.namespacerps" = "2500";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
     packages = [ cfg.package ];
-    processes.temporal.exec = "${cfg.package}/bin/temporal server start-dev ${lib.concatStringsSep " " commandArgs}";
+    env.TEMPORAL_PORT = allocatedPort;
+    env.TEMPORAL_UI_PORT = allocatedUiPort;
+    processes.temporal.ports.main.allocate = basePort;
+    processes.temporal.ports.ui.allocate = baseUiPort;
+    processes.temporal.exec = "exec ${cfg.package}/bin/temporal server start-dev ${lib.concatStringsSep " " commandArgs}";
   };
 }

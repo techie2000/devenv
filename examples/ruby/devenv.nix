@@ -4,7 +4,7 @@
   languages.ruby.enable = true;
 
   # Use a specific Ruby version.
-  # languages.ruby.version = "3.2.1";
+  # languages.ruby.version = "3.4";
 
   # Use a specific Ruby version from a .ruby-version file, compatible with rbenv.
   languages.ruby.versionFile = ./.ruby-version;
@@ -24,5 +24,5 @@
   # part of the Xcode command line developer tools, in which case they can be
   # removed.
   # For more information, see the `--install` flag in `man xcode-select`.
-  ++ lib.optionals pkgs.stdenv.isDarwin [ pkgs.libllvm ];
+  ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [ pkgs.libllvm ];
 }

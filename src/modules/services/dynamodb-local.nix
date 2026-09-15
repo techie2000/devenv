@@ -3,6 +3,11 @@
 let
   cfg = config.services.dynamodb-local;
   types = lib.types;
+
+  # Port allocation
+  portBase = cfg.port;
+  allocatedPort = config.processes.dynamodb.ports.main.value;
+
   baseDir = config.env.DEVENV_STATE + "/dynamodb-local";
   startScript = pkgs.writeShellScript "start-dynamodb-local" ''
     set -euo pipefail
@@ -13,7 +18,12 @@ let
 
     cd "${baseDir}"
 
-    ${config.services.dynamodb-local.package}/bin/dynamodb-local -port ${toString cfg.port} -dbPath ${baseDir} -disableTelemetry
+    extraFlags=""
+    if [[ "${toString cfg.sharedDb}" ]]; then
+      extraFlags+="-sharedDb"
+    fi
+
+    exec ${config.services.dynamodb-local.package}/bin/dynamodb-local -port ${toString allocatedPort} -dbPath ${baseDir} -disableTelemetry $extraFlags
   '';
 in
 {
@@ -29,25 +39,32 @@ in
 
     port = lib.mkOption {
       type = types.port;
-      description = "Listen address for the Dynamodb-local.";
+      description = "Listen port for DynamoDB Local.";
       default = 8000;
+    };
+    sharedDb = lib.mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        If true, enables the -sharedDb flag for DynamoDB Local.
+        When enabled, DynamoDB Local creates a single database file named shared-local-instance.db.
+        Every program that connects to DynamoDB accesses this file. If you delete the file, you lose any data stored in it.
+      '';
     };
   };
 
   config = lib.mkIf cfg.enable {
     processes.dynamodb = {
+      ports.main.allocate = portBase;
       exec = "${startScript}";
-      process-compose = {
-        readiness_probe = {
-          exec.command = "${pkgs.curl}/bin/curl -f -k http://127.0.0.1:${toString cfg.port}";
-          initial_delay_seconds = 1;
-          period_seconds = 10;
-          timeout_seconds = 2;
-          success_threshold = 1;
-          failure_threshold = 5;
-        };
-
-        availability.restart = "on_failure";
+      ready = {
+        exec = ''
+          AWS_ACCESS_KEY_ID=dummy AWS_SECRET_ACCESS_KEY=dummy AWS_DEFAULT_REGION=us-east-1 \
+          ${pkgs.awscli2}/bin/aws dynamodb list-tables --endpoint-url http://127.0.0.1:${toString allocatedPort} --output text --no-cli-pager >/dev/null 2>&1
+        '';
+        initial_delay = 2;
+        probe_timeout = 5;
+        failure_threshold = 5;
       };
     };
   };

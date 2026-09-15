@@ -3,6 +3,10 @@
 let
   cfg = config.services.typesense;
   types = lib.types;
+
+  # Port allocation
+  basePort = cfg.port;
+  allocatedPort = config.processes.typesense.ports.main.value;
 in
 {
   options.services.typesense = {
@@ -54,15 +58,12 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    processes.typesense.exec = ''
-      mkdir -p "$DEVENV_STATE/typesense"
-      exec "${cfg.package}/bin/typesense-server" \
-        --data-dir "$DEVENV_STATE/typesense" \
-        --api-key ${lib.escapeShellArg cfg.apiKey} \
-        --api-host ${cfg.host} \
-        --api-port ${toString cfg.port} \
-        ${lib.optionalString (cfg.searchOnlyKey != null) "--search-only-api-key ${lib.escapeShellArg cfg.searchOnlyKey}"} \
-        ${lib.escapeShellArgs cfg.additionalArgs}
-    '';
+    tasks."devenv:typesense:setup" = {
+      exec = ''mkdir -p "$DEVENV_STATE/typesense"'';
+      before = [ "devenv:processes:typesense" ];
+    };
+
+    processes.typesense.ports.main.allocate = basePort;
+    processes.typesense.exec = "exec ${cfg.package}/bin/typesense-server --data-dir $DEVENV_STATE/typesense --api-key ${lib.escapeShellArg cfg.apiKey} --api-host ${cfg.host} --api-port ${toString allocatedPort} ${lib.optionalString (cfg.searchOnlyKey != null) "--search-only-api-key ${lib.escapeShellArg cfg.searchOnlyKey}"} ${lib.escapeShellArgs cfg.additionalArgs}";
   };
 }

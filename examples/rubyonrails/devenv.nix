@@ -8,7 +8,7 @@
 # bundle
 {
   languages.ruby.enable = true;
-  languages.ruby.version = "3.2.2";
+  languages.ruby.version = "3.4";
 
   packages = [
     pkgs.openssl
@@ -16,11 +16,16 @@
     pkgs.git
     pkgs.curl
     pkgs.redis
+    # libpq headers and pkg-config file for building the `pg` gem
+    pkgs.libpq
   ];
 
   services.postgres.enable = true;
 
-  processes.rails.exec = "cd blog && rails server";
+  processes.rails = {
+    exec = "cd blog && exec rails server";
+    after = [ "devenv:processes:postgres" ];
+  };
 
   enterShell = ''
     export PATH="$DEVENV_ROOT/blog/bin:$PATH"

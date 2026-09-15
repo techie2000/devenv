@@ -5,6 +5,7 @@ export AWS_DEFAULT_REGION=fakeRegion
 export AWS_ACCESS_KEY_ID=fakeMyKeyId
 export AWS_SECRET_ACCESS_KEY=fakeSecretAccessKey
 
-wait_for_port 8000
+wait_for_processes
 
-aws dynamodb list-tables --endpoint-url http://localhost:8000
+DYNAMODB_PORT=${DYNAMODB_PORT:?DYNAMODB_PORT is not set}
+aws dynamodb list-tables --endpoint-url "http://127.0.0.1:$DYNAMODB_PORT" --output text --no-cli-pager

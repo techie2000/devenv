@@ -2,8 +2,6 @@
 
 let
   cfg = config.devcontainer;
-  settingsFormat = pkgs.formats.json { };
-  file = settingsFormat.generate "devcontainer.json" cfg.settings;
 in
 {
   options.devcontainer = {
@@ -11,12 +9,12 @@ in
 
     settings = lib.mkOption {
       type = lib.types.submodule {
-        freeformType = settingsFormat.type;
+        freeformType = (pkgs.formats.json { }).type;
 
         options.image = lib.mkOption {
           type = lib.types.str;
-          default = "ghcr.io/cachix/devenv:latest";
-          description = lib.mdDoc ''
+          default = "ghcr.io/cachix/devenv/devcontainer:latest";
+          description = ''
             The name of an image in a container registry.
           '';
         };
@@ -24,7 +22,7 @@ in
         options.overrideCommand = lib.mkOption {
           type = lib.types.anything;
           default = false;
-          description = lib.mdDoc ''
+          description = ''
             Override the default command.
           '';
         };
@@ -32,31 +30,37 @@ in
         options.updateContentCommand = lib.mkOption {
           type = lib.types.anything;
           default = "devenv test";
-          description = lib.mdDoc ''
-            Command to run after container creation.
+          description = ''
+            A command to run after the container is created.
           '';
         };
 
         options.customizations.vscode.extensions = lib.mkOption {
           type = lib.types.listOf lib.types.str;
           default = [ "mkhl.direnv" ];
-          description = lib.mdDoc ''
-            List of preinstalled VSCode extensions.
+          description = ''
+            A list of pre-installed VS Code extensions.
+          '';
+        };
+
+        options.customizations.zed.extensions = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          description = ''
+            A list of pre-installed Zed extensions.
           '';
         };
       };
 
       default = { };
 
-      description = lib.mdDoc ''
+      description = ''
         Devcontainer settings.
       '';
     };
   };
 
-  config = lib.mkIf config.devcontainer.enable {
-    enterShell = ''
-      cat ${file} > ${config.env.DEVENV_ROOT}/.devcontainer.json
-    '';
+  config = lib.mkIf cfg.enable {
+    files.".devcontainer/devcontainer.json" = { copyMode = "copy"; json = cfg.settings; };
   };
 }

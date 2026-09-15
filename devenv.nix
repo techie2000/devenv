@@ -1,158 +1,192 @@
-{ inputs, pkgs, lib, config, ... }: {
-  env.DEVENV_NIX = inputs.nix.packages.${pkgs.stdenv.system}.nix;
+{
+  inputs,
+  pkgs,
+  lib,
+  options,
+  ...
+}:
 
+let
+  inherit (pkgs.stdenv) system;
+in
+{
+  env = {
+    # The path to the eval cache database (for migrations)
+    DATABASE_URL = "sqlite:.devenv/nix-eval-cache.db";
+
+    # Use sqlite from nixpkgs to match the version used by Nix
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+    OPENSSL_NO_VENDOR = "1";
+
+    RUST_LOG = "devenv=debug";
+    RUST_LOG_SPAN_EVENTS = "full";
+  };
+
+  # Configure Claude Code
+  claude.code = {
+    enable = true;
+    commands = {
+      bump-nix = ''
+        Bump the nix input in both devenv.lock and flake.lock
+
+        1. Run `devenv update nix` and `nix flake update nix` in parallel
+        2. Commit the changes
+      '';
+      release = ''
+        Release devenv version $ARGUMENTS
+
+        1. Update version in Cargo.toml to $ARGUMENTS using `cargo set-version`
+        2. Bump secretspec to the latest release:
+           - Find the latest tag with `gh release view --repo cachix/secretspec --json tagName -q .tagName`
+           - Update the `tag = "vX.Y.Z"` in the `secretspec` dependency in Cargo.toml to that tag
+        3. Run `cargo check` to update Cargo.lock
+        4. Run `devenv tasks run devenv:crate2nix` to regenerate Cargo.nix
+        5. Put today's date in CHANGELOG.md replacing "(unreleased)"
+        6. Create a new "## X.Y.Z (unreleased)" section above the released version in CHANGELOG.md
+        7. If this is a major version bump (X.Y.0, not X.Y.Z patch):
+           - Generate a blog post in docs/src/content/docs/blog/YYYY/MM/DD/
+           - Preserve the dated URL convention used by the existing posts
+           - Use existing blog posts as reference for frontmatter, format, and style
+        8. Commit the changes
+        9. Capture the release commit SHA with `git rev-parse HEAD`
+        10. Push the commit(s) to GitHub
+        11. Create a GitHub release with `gh release create v$ARGUMENTS --target <release-commit-sha> --title "v$ARGUMENTS" --latest --notes  "<changelog for this release>"`
+        12. Bump version to next patch with `cargo set-version --bump patch`
+        13. Run `cargo check` to update Cargo.lock
+        14. Run `devenv tasks run devenv:crate2nix` to regenerate Cargo.nix
+        15. Commit with message "Next release is <new version>"
+        16. Push to GitHub
+        17. At the end, tell the user that the package still needs to be bumped in nixpkgs:
+            - The package is at pkgs/by-name/de/devenv/package.nix
+      '';
+    };
+    permissions = {
+      WebFetch = {
+        allow = [
+          "domain:github.com"
+          "domain:docs.rs"
+          "domain:docs.anthropic.com"
+        ];
+      };
+      Bash = {
+        allow = [
+          "rg:*"
+          "cargo test:*"
+          "nix search:*"
+          "devenv-run-tests:*"
+          "nix-instantiate:*"
+        ];
+      };
+    };
+  };
+
+  # Project dependencies
   packages = [
-    pkgs.cairo
-    pkgs.xorg.libxcb
-    pkgs.yaml2json
-    pkgs.tesh
-    pkgs.watchexec
-    pkgs.openssl
-  ] ++ lib.optionals pkgs.stdenv.isDarwin (with pkgs.darwin.apple_sdk; [
-    frameworks.SystemConfiguration
-  ]);
+    inputs.nix.packages.${system}.nix.dev # Required for integration tests
+    pkgs.git
+    pkgs.lychee
+    pkgs.cmake # Required by Pingora's bundled zlib-ng dependency
+    pkgs.openssl.dev
+    pkgs.sqlite.dev
+    pkgs.sqlx-cli
+    pkgs.tig
+    pkgs.cargo-outdated # Find outdated crates
+    pkgs.cargo-machete # Find unused crates
+    pkgs.cargo-edit # Adds the set-version command
+    pkgs.cargo-insta # Snapshot testing for Rust
+    pkgs.cargo-nextest # Test runner with process isolation
+    inputs.crate2nix.packages.${system}.default # Generate Cargo.nix from Cargo.lock
+    (pkgs.callPackage "${inputs.ghostty}/nix/libghostty-vt.nix" {
+      optimize = "ReleaseSafe";
+    }).dev # pkg-config provider for libghostty-vt-sys
+  ];
 
-  languages.nix.enable = true;
-  # for cli
-  languages.rust.enable = true;
-  # for docs
-  languages.python.enable = true;
-  # it breaks glibc
-  languages.python.manylinux.enable = false;
-  # speed it up
-  languages.python.uv.enable = true;
-  languages.python.venv.enable = true;
-  languages.python.venv.requirements = ./requirements.txt;
-  languages.javascript.enable = true;
-  languages.javascript.npm.enable = true;
-  languages.javascript.npm.install.enable = true;
+  languages = {
+    # For developing the Nix modules
+    nix.enable = true;
 
-  devcontainer.enable = true;
-  devcontainer.settings.customizations.vscode.extensions = [ "jnoortheen.nix-ide" ];
+    # For developing the devenv CLI
+    rust.enable = true;
+  };
+
+  devcontainer = {
+    enable = true;
+    settings.customizations = {
+      vscode.extensions = [ "jnoortheen.nix-ide" ];
+      zed.extensions = [ "nix" ];
+    };
+  };
+
   difftastic.enable = true;
 
-  processes = {
-    docs.exec = "mkdocs serve";
-    tailwind.exec = "watchexec -e html,css,js ${lib.getExe pkgs.tailwindcss} build docs/assets/extra.css -o docs/assets/output.css";
-  };
-
-  scripts.devenv-test-cli = {
-    description = "Test devenv CLI.";
-    exec = ''
-      set -xe
-      set -o pipefail
-
-      pushd examples/simple
-        # this should fail since files already exist
-        devenv init && exit 1
-      popd
-
-      tmp="$(mktemp -d)"
-      devenv init "$tmp"
-      pushd "$tmp"
-        devenv version
-        devenv --override-input devenv path:${config.devenv.root}?dir=src/modules test
-      popd
-      rm -rf "$tmp"
-
-      # Test devenv integrated into bare Nix flake
-      tmp="$(mktemp -d)"
-      pushd "$tmp"
-        nix flake init --template ''${DEVENV_ROOT}#simple
-        nix flake update \
-          --override-input devenv ''${DEVENV_ROOT}
-        nix develop --accept-flake-config --impure --command echo nix-develop started succesfully |& tee ./console
-        grep -F 'nix-develop started succesfully' <./console
-        grep -F "$(${lib.getExe pkgs.hello})" <./console
-
-        # Assert that nix-develop fails in pure mode.
-        if nix develop --command echo nix-develop started in pure mode |& tee ./console
-        then
-          echo "nix-develop was able to start in pure mode. This is explicitly not supported at the moment."
-          exit 1
-        fi
-        grep -F 'devenv was not able to determine the current directory.' <./console
-      popd
-      rm -rf "$tmp"
-
-      # Test devenv integrated into flake-parts Nix flake
-      tmp="$(mktemp -d)"
-      pushd "$tmp"
-        nix flake init --template ''${DEVENV_ROOT}#flake-parts
-        nix flake update \
-          --override-input devenv ''${DEVENV_ROOT}
-        nix develop --accept-flake-config --override-input devenv-root "file+file://"<(printf %s "$PWD") --command echo nix-develop started succesfully |& tee ./console
-        grep -F 'nix-develop started succesfully' <./console
-        grep -F "$(${lib.getExe pkgs.hello})" <./console
-        # Test that a container can be built
-        if $(uname) == "Linux"
-        then
-          nix build --override-input devenv-root "file+file://"<(printf %s "$PWD") --accept-flake-config --show-trace .#container-processes
-        fi
-      popd
-      rm -rf "$tmp"
-    '';
-  };
-  scripts."devenv-generate-doc-options" = {
-    description = "Generate option docs.";
-    exec = ''
-      set -e
-      output_file=docs/reference/options.md
-      options=$(nix build --impure --extra-experimental-features 'flakes nix-command' --show-trace --print-out-paths --no-link '.#devenv-docs-options')
-      echo "# devenv.nix options" > $output_file
-      echo >> $output_file
-      cat $options >> $output_file
-      # https://github.com/NixOS/nixpkgs/issues/224661
-      sed -i 's/\\\././g' $output_file
-    '';
-  };
-  scripts."devenv-generate-languages-example" = {
-    description = "Generate an example enabling every supported language.";
+  scripts.devenv-generate-languages-example = {
+    description = "Generate an example enabling every supported language";
     exec = ''
       cat > examples/supported-languages/devenv.nix <<EOF
-      { pkgs, ... }: {
+      # DO NOT MODIFY.
+      # This file was generated by devenv-generate-languages-example.
+      { pkgs, ... }:
+      {
 
         # Enable all languages tooling!
-        ${lib.concatStringsSep "\n  " (map (lang: "languages.${lang}.enable = true;") (builtins.attrNames config.languages))}
+        ${lib.concatStringsSep "\n  " (
+          map (
+            lang:
+            if lang == "hare" then
+              "languages.hare.enable = pkgs.lib.meta.availableOn pkgs.stdenv.hostPlatform pkgs.hare;"
+            else
+              "languages.${lang}.enable = true;"
+          ) (builtins.attrNames options.languages)
+        )}
 
         # If you're missing a language, please contribute it by following examples of other languages <3
       }
       EOF
     '';
   };
-  scripts."devenv-generate-docs" = {
-    description = "Generate lists of all languages and services.";
-    exec = ''
-      cat > docs/services-all.md <<EOF
-        \`\`\`nix
-        ${lib.concatStringsSep "\n  " (map (lang: "services.${lang}.enable = true;") (builtins.attrNames config.services))}
-        \`\`\`
-      EOF
-      cat > docs/languages-all.md <<EOF
-        \`\`\`nix
-        ${lib.concatStringsSep "\n  " (map (lang: "languages.${lang}.enable = true;") (builtins.attrNames config.languages))}
-        \`\`\`
-      EOF
-    '';
+
+  tasks."devenv:crate2nix" = {
+    description = "Generate Cargo.nix from Cargo.lock";
+    exec = "crate2nix generate -h nix/crate-hashes.json";
+    execIfModified = [
+      "Cargo.lock"
+      "Cargo.toml"
+      "*/Cargo.toml"
+    ];
   };
 
-  pre-commit.hooks = {
-    nixpkgs-fmt.enable = true;
-    #shellcheck.enable = true;
-    #clippy.enable = true;
-    rustfmt.enable = true;
-    #markdownlint.enable = true;
-    markdownlint.settings.configuration = {
-      MD013 = {
-        line_length = 120;
+  git-hooks =
+    let
+      modulePath = "^src/modules/";
+    in
+    {
+      package = pkgs.prek;
+      excludes = [
+        "Cargo.nix"
+        "^tests/syntax-error/devenv\\.nix$"
+      ];
+      hooks = {
+        nixfmt = {
+          enable = true;
+          files = "\\.nix$";
+          excludes = [ modulePath ];
+        };
+        nixpkgs-fmt = {
+          enable = true;
+          files = "${modulePath}.*\\.nix$";
+        };
+        rustfmt.enable = true;
+        markdownlint = {
+          settings.configuration = {
+            MD013 = {
+              line_length = 120;
+            };
+            MD033 = false;
+            MD034 = false;
+          };
+        };
       };
-      MD033 = false;
-      MD034 = false;
     };
-    generate-css = {
-      enable = true;
-      name = "generate-css";
-      entry = "${lib.getExe pkgs.tailwindcss} build docs/assets/extra.css -o docs/assets/output.css";
-    };
-  };
 }
+
+# reload-test

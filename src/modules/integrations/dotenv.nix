@@ -1,85 +1,166 @@
-{ config, lib, self, ... }:
+{ config
+, lib
+, options
+, ...
+}:
 
 let
   cfg = config.dotenv;
 
   normalizeFilenames = filenames: if lib.isList filenames then filenames else [ filenames ];
-  dotenvFiles = normalizeFilenames cfg.filename;
-  dotenvPaths = map (filename: (self + ("/" + filename))) dotenvFiles;
-
-  parseLine = line:
+  cliOwnedNames = [ "SHELL" "DEVENV_CMDLINE" ];
+  dotenvEnvModuleLocation = "devenv:dotenv-resolved";
+  dotenvEnvModule =
+    { config
+    , devenvPrimops ? { }
+    , lib
+    , self ? null
+    , ...
+    }:
     let
-      parts = builtins.match "([[:space:]]*export[[:space:]]+)?([^[:space:]=#]+)[[:space:]]*=[[:space:]]*(.*)" line;
+      # Released CLIs before loadDotenv was added still resolve the devenv
+      # module input from main. Keep their original Nix parser available until
+      # those releases are outside the compatibility window.
+      parseLegacyLine = line:
+        let
+          parts = builtins.match "([[:space:]]*export[[:space:]]+)?([^[:space:]=#]+)[[:space:]]*=[[:space:]]*(.*)" line;
+        in
+        if parts != null && builtins.length parts == 3 then
+          {
+            name = builtins.elemAt parts 1;
+            value = builtins.elemAt parts 2;
+          }
+        else
+          null;
+
+      parseLegacyFile = content:
+        builtins.listToAttrs (
+          lib.filter (entry: entry != null) (
+            map parseLegacyLine (lib.splitString "\n" content)
+          )
+        );
+
+      legacyDotenvPath = filename:
+        if lib.hasPrefix "/" filename then
+          builtins.toPath filename
+        else if self != null then
+          self + ("/" + filename)
+        else
+          builtins.toPath "${config.devenv.root}/${filename}";
+
+      legacyLoadDotenv = filenames: substitution:
+        if substitution then
+          throw ''
+            dotenv.substitution requires a newer devenv CLI with the loadDotenv primop.
+            The current devenv CLI is ${config.devenv.cli.version}.
+          ''
+        else
+          lib.foldl'
+            (resolved: filename:
+              let
+                path = legacyDotenvPath filename;
+              in
+              lib.recursiveUpdate resolved (
+                if builtins.pathExists path then
+                  parseLegacyFile (builtins.readFile path)
+                else
+                  { }
+              ))
+            { }
+            filenames;
+
+      hasLoadDotenv = devenvPrimops ? loadDotenv;
+      isLegacyCli =
+        config.devenv.cli.version != null
+        && !config.devenv.flakesIntegration
+        && !hasLoadDotenv;
+      loadDotenv =
+        if hasLoadDotenv then
+          devenvPrimops.loadDotenv
+        else if isLegacyCli then
+          legacyLoadDotenv
+        else
+          _filenames: _substitution:
+            throw ''
+              The dotenv integration requires the C-Nix devenv CLI. It is not
+              available through the flake integration or another standalone Nix evaluation.
+            '';
     in
-    if parts != null && builtins.length parts == 3
-    then { name = builtins.elemAt parts 1; value = builtins.elemAt parts 2; }
-    else null;
-
-  parseEnvFile = content: builtins.listToAttrs (lib.filter (x: !builtins.isNull x) (map parseLine (lib.splitString "\n" content)));
-
-  mergeEnvFiles = files: lib.foldl' (acc: file: lib.recursiveUpdate acc (if lib.pathExists file then parseEnvFile (builtins.readFile file) else { })) { } files;
-
-  createMissingFileMessage = file:
-    let
-      exampleExists = lib.pathExists (file + ".example");
-      filename = builtins.baseNameOf (toString file);
-    in
-    lib.optionalString (!lib.pathExists file) ''
-      echo "💡 The dotenv file '${filename}' was not found."
-      ${lib.optionalString exampleExists ''
-        echo
-        echo "   To create this file, you can copy the example file:"
-        echo
-        echo "   $ cp ${filename}.example ${filename}"
-        echo
-      ''}
-    '';
+    {
+      _file = dotenvEnvModuleLocation;
+      config = lib.mkIf config.dotenv.enable {
+        dotenv.resolved = builtins.removeAttrs
+          (loadDotenv (normalizeFilenames config.dotenv.filename) config.dotenv.substitution)
+          cliOwnedNames;
+        env = lib.mapAttrs (_name: value: lib.mkDefault value) config.dotenv.resolved;
+      };
+    };
 in
 {
+  imports = [ dotenvEnvModule ];
+
   options.dotenv = {
-    enable = lib.mkEnableOption ".env integration, doesn't support comments or multiline values.";
+    enable = lib.mkEnableOption ".env integration";
 
     filename = lib.mkOption {
       type = lib.types.either lib.types.str (lib.types.listOf lib.types.str);
       default = ".env";
-      description = "The name of the dotenv file to load, or a list of dotenv files to load in order of precedence.";
+      description = "The path of the dotenv file to load, or a list of dotenv files to load in order of precedence.";
+    };
+
+    substitution = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Whether to expand variable references such as `$NAME`, `''${NAME}`, and
+        `''${NAME:-default}` in dotenv values. Disabled by default so dollar signs
+        in passwords, hashes, and tokens remain literal.
+      '';
     };
 
     resolved = lib.mkOption {
-      type = lib.types.attrsOf lib.types.anything;
+      type = lib.types.attrsOf lib.types.str;
+      default = { };
       internal = true;
+      description = "Dotenv values returned by the devenv CLI primop.";
+    };
+
+    reservedNames = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      internal = true;
+      description = "Environment variable names owned by the Nix configuration.";
     };
 
     disableHint = lib.mkOption {
       type = lib.types.bool;
       default = false;
-      description = "Disable the hint that are printed when the dotenv module is not enabled, but .env is present.";
+      description = "Disable the hint printed when a dotenv file is present but the integration is not enabled.";
     };
   };
 
-  config = lib.mkMerge [
-    (lib.mkIf cfg.enable {
-      env = lib.mapAttrs (name: value: lib.mkDefault value) config.dotenv.resolved;
-      enterShell = lib.concatStringsSep "\n" (map createMissingFileMessage dotenvPaths);
-      dotenv.resolved = mergeEnvFiles dotenvPaths;
-      assertions = [{
-        assertion = builtins.all (lib.hasPrefix ".env") dotenvFiles;
-        message = "The dotenv filename must start with '.env'.";
-      }];
-    })
-    (lib.mkIf (!cfg.enable && !cfg.disableHint) {
-      enterShell =
-        let
-          dotenvFound = lib.any lib.pathExists dotenvPaths;
-        in
-        lib.optionalString dotenvFound ''
-          echo "💡 A dotenv file was found, while dotenv integration is currently not enabled."
-          echo
-          echo "   To enable it, add \`dotenv.enable = true;\` to your devenv.nix file.";
-          echo "   To disable this hint, add \`dotenv.disableHint = true;\` to your devenv.nix file.";
-          echo
-          echo "See https://devenv.sh/integrations/dotenv/ for more information.";
+  config = {
+    # Runtime loading happens again after enter-shell tasks. Definitions from
+    # outside the dotenv injection module remain Nix-owned even when their
+    # values happen to equal the initial dotenv value.
+    dotenv.reservedNames = lib.unique (
+      lib.concatMap
+        (definition:
+          lib.optionals (definition.file != dotenvEnvModuleLocation) (
+            builtins.attrNames definition.value
+          )
+        )
+        options.env.definitionsWithLocations
+    );
+
+    assertions = [
+      {
+        assertion = !(cfg.enable && config.devenv.flakesIntegration);
+        message = ''
+          The dotenv integration is loaded by the devenv CLI and is not
+          supported by the flake integration. Use `devenv shell`, or load the
+          file separately in your flake-based shell.
         '';
-    })
-  ];
+      }
+    ];
+  };
 }

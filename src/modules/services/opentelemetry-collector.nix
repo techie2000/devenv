@@ -17,9 +17,11 @@ let
     };
   };
 
+  mergedSettings = lib.recursiveUpdate defaultSettings cfg.settings;
+
   otelConfig =
     if cfg.configFile == null
-    then settingsFormat.generate "otel-config.yaml" cfg.settings
+    then settingsFormat.generate "otel-config.yaml" mergedSettings
     else cfg.configFile;
 in
 {
@@ -39,8 +41,8 @@ in
         Override the configuration file used by OpenTelemetry Collector.
         By default, a configuration is generated from `services.opentelemetry-collector.settings`.
 
-        If overriding, enable the `health_check` extension to allow process-compose to check whether the Collector is ready.
-        Otherwise, disable the readiness probe by setting `processes.opentelemetry-collector.process-compose.readiness_probe = {};`.
+        If overriding, enable the `health_check` extension to allow the readiness probe to check whether the Collector is ready.
+        Otherwise, disable the readiness probe by setting `processes.opentelemetry-collector.ready = lib.mkForce null;`.
       '';
       default = null;
       example = lib.literalExpression ''
@@ -55,29 +57,24 @@ in
         Refer to https://opentelemetry.io/docs/collector/configuration/
         for more information on how to configure the Collector.
       '';
-      defaultText = defaultSettings;
+      default = defaultSettings;
+      defaultText = lib.literalExpression "defaultSettings";
     };
   };
 
   config = lib.mkIf cfg.enable {
     processes.opentelemetry-collector = {
-      exec = "${lib.getExe cfg.package} --config ${otelConfig}";
+      exec = "exec ${lib.getExe cfg.package} --config ${otelConfig}";
 
-      process-compose = {
-        readiness_probe = {
-          http_get = {
-            host = "localhost";
-            scheme = "http";
-            path = "/";
-            port = 13133;
-          };
-          initial_delay_seconds = 2;
-          period_seconds = 10;
-          timeout_seconds = 5;
-          success_threshold = 1;
-          failure_threshold = 3;
+      ready = {
+        http.get = {
+          host = "localhost";
+          scheme = "http";
+          path = "/";
+          port = 13133;
         };
-        availability.restart = "on_failure";
+        initial_delay = 2;
+        probe_timeout = 5;
       };
     };
   };

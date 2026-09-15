@@ -8,8 +8,19 @@ let
   cfg = config.services.couchdb;
   opts = options.services.couchdb;
 
+  # Port allocation
+  basePort = cfg.settings.chttpd.port;
+  allocatedPort = config.processes.couchdb.ports.main.value;
+
+  # Override settings with allocated port
+  settingsWithPort = cfg.settings // {
+    chttpd = cfg.settings.chttpd // {
+      port = allocatedPort;
+    };
+  };
+
   settingsFormat = pkgs.formats.ini { };
-  configFile = settingsFormat.generate "couchdb.ini" cfg.settings;
+  configFile = settingsFormat.generate "couchdb.ini" settingsWithPort;
 
   startScript = pkgs.writeShellScriptBin "start-couchdb" ''
     set -euo pipefail
@@ -95,7 +106,7 @@ in
         options.chttpd.bind_address = lib.mkOption {
           type = lib.types.str;
           default = "127.0.0.1";
-          description = lib.mdDoc ''
+          description = ''
             Defines the IP address by which CouchDB will be accessible.
           '';
         };
@@ -103,17 +114,15 @@ in
         options.chttpd.port = lib.mkOption {
           type = lib.types.port;
           default = 5984;
-          description = lib.mdDoc ''
+          description = ''
             Defined the port number to listen.
           '';
         };
       };
       description = ''
         CouchDB configuration.
-        to know more about all settings, look at:
-        <link
-          xlink:href="https://docs.couchdb.org/en/stable/config/couchdb.html"
-        />
+        To learn more about all settings, see the
+        [CouchDB configuration reference](https://docs.couchdb.org/en/stable/config/couchdb.html).
       '';
 
       example = lib.literalExpression ''
@@ -154,6 +163,7 @@ in
       };
     };
     env.ERL_FLAGS = "-couch_ini ${cfg.package}/etc/default.ini ${configFile} '${cfg.baseDir}/couchdb.ini'";
+    processes.couchdb.ports.main.allocate = basePort;
     processes.couchdb.exec = "${startScript}/bin/start-couchdb";
   };
 }

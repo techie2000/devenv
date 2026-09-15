@@ -144,7 +144,7 @@ in
       default = false;
       type = types.bool;
       description = ''
-        Use saved config, if any (and prefer over configuration passed with [`caddy.config`](#caddyconfig)).
+        Use saved config, if any (and prefer over configuration passed with [`caddy.config`](#servicescaddyconfig)).
       '';
     };
 
@@ -168,7 +168,7 @@ in
 
     dataDir = mkOption {
       default = "${config.env.DEVENV_STATE}/caddy";
-      defaultText = literalExpression ''"${config.env.DEVENV_STATE}/caddy"'';
+      defaultText = literalExpression "\"\${config.env.DEVENV_STATE}/caddy\"";
       type = types.path;
       description = ''
         The data directory, for storing certificates. Before 17.09, this
@@ -190,6 +190,10 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    processes.caddy.exec = ''XDG_DATA_HOME="${cfg.dataDir}/data" XDG_CONFIG_HOME="${cfg.dataDir}/config" ${cfg.package}/bin/${cfg.package.meta.mainProgram} run ${optionalString cfg.resume "--resume"} --config ${configJSON}'';
+    processes.caddy.exec = ''
+      export XDG_DATA_HOME="${cfg.dataDir}/data"
+      export XDG_CONFIG_HOME="${cfg.dataDir}/config"
+      exec ${cfg.package}/bin/${cfg.package.meta.mainProgram} run ${optionalString cfg.resume "--resume"} --config ${configJSON}
+    '';
   };
 }

@@ -1,15 +1,46 @@
-{ pkgs, lib, config, ... }:
-
+{ pkgs
+, lib
+, config
+, ...
+}:
 let
   cfg = config.services.postgres;
-  types = lib.types;
+  inherit (lib) types;
+
+  # Port allocation
+  basePort = cfg.port;
+  allocatedPort =
+    if cfg.listen_addresses == ""
+    then basePort
+    else config.processes.postgres.ports.main.value;
 
   q = lib.escapeShellArg;
 
   runtimeDir = "${config.env.DEVENV_RUNTIME}/postgres";
 
+  parseListenAddresses = input:
+    let
+      convertSpecialValue = value:
+        if value == "*" || value == "0.0.0.0" then "127.0.0.1"
+        else if value == "::" then "::1"
+        else value;
+    in
+    lib.pipe input [
+      (lib.splitString ",")
+      (map lib.trim)
+      (map convertSpecialValue)
+      (builtins.filter (x: x != ""))
+    ];
+
+  # Fetch the first element of a list or return null if the list is empty.
+  headWithDefault = default: input:
+    if input == [ ]
+    then default
+    else builtins.head input;
+
   postgresPkg =
-    if cfg.extensions != null then
+    if cfg.extensions != null
+    then
       if builtins.hasAttr "withPackages" cfg.package
       then cfg.package.withPackages cfg.extensions
       else
@@ -19,44 +50,68 @@ let
         ''
     else cfg.package;
 
+  # TODO: we can probably clean this up a lot by delegating more "if exists" stuff to psql (à la `DO $$...$$` below)
   setupInitialDatabases =
-    if cfg.initialDatabases != [ ] then
+    if cfg.initialDatabases != [ ]
+    then
       (lib.concatMapStrings
-        (database: ''
-          echo "Checking presence of database: ${database.name}"
-          # Create initial databases
-          dbAlreadyExists="$(
-            echo "SELECT 1 as exists FROM pg_database WHERE datname = '${database.name}';" | \
-            psql --dbname postgres | \
-            ${pkgs.gnugrep}/bin/grep -c 'exists = "1"' || true
-          )"
-          echo $dbAlreadyExists
-          if [ 1 -ne "$dbAlreadyExists" ]; then
-            echo "Creating database: ${database.name}"
-            echo 'create database "${database.name}";' | psql --dbname postgres
-
-            ${lib.optionalString (database.schema != null) ''
-            echo "Applying database schema on ${database.name}"
-            if [ -f "${database.schema}" ]
-            then
-              echo "Running file ${database.schema}"
-              ${pkgs.gawk}/bin/awk 'NF' "${database.schema}" | psql --dbname ${database.name}
-            elif [ -d "${database.schema}" ]
-            then
-              # Read sql files in version order. Apply one file
-              # at a time to handle files where the last statement
-              # doesn't end in a ;.
-              ls -1v "${database.schema}"/*.sql | while read f ; do
-                 echo "Applying sql file: $f"
-                 ${pkgs.gawk}/bin/awk 'NF' "$f" | psql --dbname ${database.name}
-              done
-            else
-              echo "ERROR: Could not determine how to apply schema with ${database.schema}"
-              exit 1
-            fi
+        (database:
+          let
+            psqlUserFlags =
+              if (database.user != null)
+              then "--user ${database.user}"
+              else "";
+          in
+          ''
+            echo "Checking presence of database: ${database.name}"
+            # Create initial databases
+            dbAlreadyExists="$(
+              echo "SELECT 1 AS exists FROM pg_database WHERE datname = '${database.name}';" | \
+              psql --dbname postgres | \
+              ${pkgs.gnugrep}/bin/grep -c 'exists = "1"' || true
+            )"
+            echo $dbAlreadyExists
+            if [ 1 -ne "$dbAlreadyExists" ]; then
+              ${lib.optionalString (database.user != null) ''
+              echo "Creating role ${database.user}..."
+              psql --dbname postgres <<'EOF'
+              DO $$
+                  BEGIN
+                      CREATE ROLE "${database.user}" WITH LOGIN${lib.optionalString (database.pass != null) " PASSWORD '${database.pass}'"};
+                      EXCEPTION WHEN duplicate_object THEN RAISE NOTICE '%, skipping', SQLERRM USING ERRCODE = SQLSTATE;
+                  END
+              $$;
+              EOF
             ''}
-          fi
-        '')
+              echo "Creating database: ${database.name}"
+              echo 'CREATE DATABASE "${database.name}"${lib.optionalString (database.user != null) " OWNER \"${database.user}\""};' | psql --dbname postgres
+              if [ ${q database.initialSQL} != null ]
+              then
+                echo "Running initial SQL on database ${database.name}"
+                echo ${q database.initialSQL} | psql --dbname ${database.name}
+              fi
+              ${lib.optionalString (database.schema != null) ''
+              echo "Applying database schema on ${database.name}"
+              if [ -f "${database.schema}" ]
+              then
+                echo "Running file ${database.schema}"
+                ${pkgs.gawk}/bin/awk 'NF' "${database.schema}" | psql ${psqlUserFlags} --dbname ${database.name}
+              elif [ -d "${database.schema}" ]
+              then
+                # Read sql files in version order. Apply one file
+                # at a time to handle files where the last statement
+                # doesn't end in a ;.
+                ls -1v "${database.schema}"/*.sql | while read f ; do
+                   echo "Applying sql file: $f"
+                   ${pkgs.gawk}/bin/awk 'NF' "$f" | psql ${psqlUserFlags} --dbname ${database.name}
+                done
+              else
+                echo "ERROR: Could not determine how to apply schema with ${database.schema}"
+                exit 1
+              fi
+            ''}
+            fi
+          '')
         cfg.initialDatabases)
     else
       lib.optionalString cfg.createDatabase ''
@@ -66,25 +121,32 @@ let
       '';
 
   runInitialScript =
-    if cfg.initialScript != null then
-      ''
-        echo ${q cfg.initialScript} | psql --dbname postgres
-      ''
-    else
-      "";
+    if cfg.initialScript != null
+    then ''
+      echo ${q cfg.initialScript} | psql --dbname postgres
+    ''
+    else "";
 
   toStr = value:
-    if true == value then
-      "yes"
-    else if false == value then
-      "no"
-    else if lib.isString value then
-      "'${lib.replaceStrings [ "'" ] [ "''" ] value}'"
-    else
-      toString value;
+    if true == value
+    then "yes"
+    else if false == value
+    then "no"
+    else if lib.isString value
+    then "'${lib.replaceStrings ["'"] ["''"] value}'"
+    else toString value;
 
-  configFile = pkgs.writeText "postgresql.conf" (lib.concatStringsSep "\n"
-    (lib.mapAttrsToList (n: v: "${n} = ${toStr v}") cfg.settings));
+  configFile =
+    pkgs.writeText "postgresql.conf" (lib.concatStringsSep "\n"
+      (lib.mapAttrsToList (n: v: "${n} = ${toStr v}") cfg.settings));
+  setupPgHbaFileScript =
+    if cfg.hbaConf != null
+    then
+      let
+        file = pkgs.writeText "pg_hba.conf" cfg.hbaConf;
+      in
+      ''cp ${file} "$PGDATA/pg_hba.conf"''
+    else "";
   setupScript = pkgs.writeShellScriptBin "setup-postgres" ''
     set -euo pipefail
     export PATH=${postgresPkg}/bin:${pkgs.coreutils}/bin
@@ -101,6 +163,9 @@ let
     # Setup config
     cp ${configFile} "$PGDATA/postgresql.conf"
 
+    # Setup pg_hba.conf
+    ${setupPgHbaFileScript}
+
     if [[ "$POSTGRES_RUN_INITIAL_SCRIPT" = "true" ]]; then
       echo
       echo "PostgreSQL is setting up the initial database."
@@ -108,7 +173,7 @@ let
       OLDPGHOST="$PGHOST"
       PGHOST=${q runtimeDir}
 
-      pg_ctl -D "$PGDATA" -w start -o "-c unix_socket_directories=${runtimeDir} -c listen_addresses= -p ${toString cfg.port}"
+      pg_ctl -D "$PGDATA" -w start -o "-c unix_socket_directories=${runtimeDir} -c listen_addresses= -p ${toString allocatedPort}"
       ${setupInitialDatabases}
 
       ${runInitialScript}
@@ -121,6 +186,9 @@ let
       echo
     fi
     unset POSTGRES_RUN_INITIAL_SCRIPT
+
+    # Create a file marker to indicate PostgreSQL has completed initialization
+    touch "$PGDATA/.devenv_initialized"
   '';
   startScript = pkgs.writeShellScriptBin "start-postgres" ''
     set -euo pipefail
@@ -176,7 +244,20 @@ in
 
     listen_addresses = lib.mkOption {
       type = types.str;
-      description = "Listen address";
+      description = ''
+        A comma-separated list of TCP/IP address(es) on which the server should listen for connections.
+
+        By default, the server only accepts connections over unix sockets.
+
+        This option is parsed to set the `PGHOST` environment variable.
+
+        Special values:
+          - \'*\' to listen on all available network interfaces.
+          - \'0.0.0.0\' to listen on all available IPv4 network interfaces.
+          - \'::\' to listen on all available IPv6 network interfaces.
+          - \'localhost\' to listen only on the loopback interface.
+          - \'\' (empty string) disables TCP/IP connections and listens only on the unix socket.
+      '';
       default = "";
       example = "127.0.0.1";
     };
@@ -246,6 +327,33 @@ in
               an empty database is created.
             '';
           };
+          user = lib.mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = ''
+              Username of owner of the database. If set, a role with this name is created and the database is owned by it. If null, the default $USER is used.
+            '';
+          };
+          pass = lib.mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = ''
+              Password of the database owner role. Requires `user` to be set.
+            '';
+          };
+          initialSQL = lib.mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            description = ''
+              SQL commands to run on this specific database during it's initialization.
+              Multiple SQL expressions can be separated by semicolons.
+            '';
+            example = lib.literalExpression ''
+              CREATE TABLE users (id SERIAL PRIMARY KEY, name TEXT);
+              INSERT INTO users (name) VALUES ('admin');
+              CREATE EXTENSION IF NOT EXISTS pg_uuidv7;
+            '';
+          };
         };
       });
       default = [ ];
@@ -270,46 +378,119 @@ in
       description = ''
         Initial SQL commands to run during database initialization. This can be multiple
         SQL expressions separated by a semi-colon.
+        Use `initialScript` for server-wide setup, such as creating roles or configuring
+        global settings. For database-specific initialization, use `initialSQL` within
+        `initialDatabases`. `initialScript` is executed after the `initialDatabases`
+        setup is done.
       '';
       example = lib.literalExpression ''
         CREATE ROLE postgres SUPERUSER;
         CREATE ROLE bar;
       '';
     };
+
+    hbaConf = lib.mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      description = ''
+        The contents of a custom pg_hba.conf file to copy into the postgres installation.
+        This allows for custom connection rules that you want to establish on the server.
+      '';
+      example = lib.literalExpression ''
+        builtins.readFile ./my-custom/directory/to/pg_hba.conf
+      '';
+    };
   };
 
-  config = lib.mkIf cfg.enable {
-    packages = [ postgresPkg startScript ];
+  config = lib.mkMerge [
+    {
+      changelogs = [
+        {
+          date = "2026-08-16";
+          title = "services.postgres: only PostgreSQL's binaries are added to the shell";
+          when = cfg.enable;
+          description = ''
+            `services.postgres` now adds only the output of `services.postgres.package` that holds the server and client binaries (`postgres`, `psql`, `pg_ctl`, ...) to the shell.
+            Previously the whole package was added, which made the shell pick up PostgreSQL's development output as well: about 2.4 GB of LLVM, Perl, Python and Tcl, and the libpq headers and `libpq.pc` on the shell's include and pkg-config paths.
 
-    env.PGDATA = config.env.DEVENV_STATE + "/postgres";
-    env.PGHOST = lib.mkDefault runtimeDir;
-    env.PGPORT = cfg.port;
+            If you build against or load the libpq client library yourself, for example with the Ruby `pg` gem, `psycopg2` built from source or pure-Python `psycopg`, add `pkgs.libpq` to `packages`.
+            Builds that need `pg_config` can use `pkgs.libpq.pg_config`.
+          '';
+        }
+        {
+          date = "2026-03-16";
+          title = "services.postgres: initialDatabases now sets database owner";
+          when = cfg.enable;
+          description = ''
+            When `user` is specified in `services.postgres.initialDatabases`, the database is now created with that user as owner (`CREATE DATABASE ... OWNER`).
+            Previously the database was always owned by `$USER` regardless of the `user` option.
 
-    services.postgres.settings = {
-      listen_addresses = cfg.listen_addresses;
-      port = cfg.port;
-      unix_socket_directories = lib.mkDefault runtimeDir;
-    };
+            Additionally, setting `pass` without `user` now triggers an assertion error.
+            Previously, `pass` without `user` was silently ignored.
+          '';
+        }
+      ];
+    }
+    (lib.mkIf cfg.enable {
+      assertions = lib.concatMap
+        (database: [
+          {
+            assertion = database.pass != null -> database.user != null;
+            message = "services.postgres.initialDatabases: database '${database.name}' has `pass` set but not `user`. Setting `pass` requires `user`.";
+          }
+        ])
+        cfg.initialDatabases;
 
-    processes.postgres = {
-      exec = "${startScript}/bin/start-postgres";
+      # The `dev` output retains the toolchain PostgreSQL was built with
+      # (LLVM, Perl, Python, Tcl) through pgxs.
+      packages = [
+        (lib.getBin postgresPkg)
+        startScript
+      ];
 
-      process-compose = {
-        # SIGINT (= 2) for faster shutdown: https://www.postgresql.org/docs/current/server-shutdown.html
-        shutdown.signal = 2;
+      env.PGDATA = config.env.DEVENV_STATE + "/postgres";
+      env.PGHOST =
+        let
+          parsedAddress = headWithDefault null (parseListenAddresses cfg.listen_addresses);
+          host =
+            if cfg.listen_addresses != ""
+            then parsedAddress
+            else runtimeDir;
+        in
+        lib.mkDefault host;
+      # Required for init scripts.
+      env.PGPORT = allocatedPort;
 
-        readiness_probe = {
-          exec.command = "${postgresPkg}/bin/pg_isready -d template1";
-          initial_delay_seconds = 2;
-          period_seconds = 10;
-          timeout_seconds = 4;
-          success_threshold = 1;
+      services.postgres.settings = {
+        listen_addresses = cfg.listen_addresses;
+        port = allocatedPort;
+        unix_socket_directories = lib.mkDefault runtimeDir;
+      };
+
+      processes.postgres = {
+        ports = lib.mkIf (cfg.listen_addresses != "") {
+          main.allocate = basePort;
+        };
+        exec = "${startScript}/bin/start-postgres";
+
+        ready = {
+          exec = ''
+            if [[ -f "$PGDATA/.devenv_initialized" ]]; then
+              ${postgresPkg}/bin/pg_isready -d template1 && \\
+              ${postgresPkg}/bin/psql -c "SELECT 1" template1 > /dev/null 2>&1
+            else
+              echo "Waiting for PostgreSQL initialization to complete..." 2>&1
+              exit 1
+            fi
+          '';
+          initial_delay = 2;
+          probe_timeout = 4;
           failure_threshold = 5;
         };
 
-        # https://github.com/F1bonacc1/process-compose#-auto-restart-if-not-healthy
-        availability.restart = "on_failure";
+        # SIGINT requests a fast shutdown: https://www.postgresql.org/docs/current/server-shutdown.html
+        shutdown.signal = 2;
       };
-    };
-  };
+    })
+  ];
 }

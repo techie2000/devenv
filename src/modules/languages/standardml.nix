@@ -10,18 +10,28 @@ in
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.mlton;
-      defaultText = "pkgs.mlton";
+      defaultText = lib.literalExpression "pkgs.mlton";
       description = ''
         The Standard ML package to use.
       '';
     };
+
+    lsp = {
+      enable = lib.mkEnableOption "Standard ML Language Server" // { default = true; };
+
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = pkgs.millet;
+        defaultText = lib.literalExpression "pkgs.millet";
+        description = "The Standard ML language server package to use.";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
-    packages = with pkgs; [
+    packages = [
       cfg.package
-      millet
-      smlfmt
-    ];
+      pkgs.smlfmt
+    ] ++ lib.optional cfg.lsp.enable cfg.lsp.package;
   };
 }

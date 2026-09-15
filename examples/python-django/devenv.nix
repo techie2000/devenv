@@ -24,15 +24,16 @@ in
   services.postgres = {
     enable = true;
     initialScript = "CREATE USER ${db_user} SUPERUSER;";
-    initialDatabases = [{ name = db_name; }];
+    initialDatabases = [ { name = db_name; } ];
   };
 
   processes.runserver = {
-    exec = "python manage.py runserver";
-    process-compose.depends_on.postgres.condition = "process_healthy";
+    exec = "exec python manage.py runserver";
+    after = [ "devenv:processes:postgres" ];
   };
 
   enterTest = ''
+    wait_for_processes
     python manage.py test
   '';
 }

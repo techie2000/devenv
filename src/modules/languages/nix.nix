@@ -2,7 +2,7 @@
 
 let
   cfg = config.languages.nix;
-  cachix = "${lib.getBin config.cachix.package}";
+  cachix = lib.getBin config.cachix.package;
 
   # a bit of indirection to prevent mkShell from overriding the installed Nix
   vulnix = pkgs.buildEnv {
@@ -14,11 +14,16 @@ in
 {
   options.languages.nix = {
     enable = lib.mkEnableOption "tools for Nix development";
-    lsp.package = lib.mkOption {
-      type = lib.types.package;
-      default = pkgs.nil;
-      defaultText = lib.literalExpression "pkgs.nil";
-      description = "The LSP package to use";
+
+    lsp = {
+      enable = lib.mkEnableOption "Nix Language Server" // { default = true; };
+
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = pkgs.nixd;
+        defaultText = lib.literalExpression "pkgs.nixd";
+        description = "The Nix language server package to use.";
+      };
     };
   };
 
@@ -26,9 +31,8 @@ in
     packages = with pkgs; [
       statix
       deadnix
-      cfg.lsp.package
-    ] ++ (lib.optional config.cachix.enable cachix) ++ [
       vulnix
-    ];
+    ] ++ lib.optional cfg.lsp.enable cfg.lsp.package
+    ++ lib.optional config.cachix.enable cachix;
   };
 }

@@ -1,12 +1,25 @@
-{ ... }:
+{ config, ... }:
 
+let
+  allocatedPort = config.processes.clickhouse-server.ports.main.value;
+  clickhouseEndpoint = "tcp://127.0.0.1:${toString allocatedPort}?dial_timeout=10s&compress=lz4";
+  dbName = "otel";
+in
 {
-  services.clickhouse.enable = true;
-
-  # Wait for clickhouse to come up
-  processes.opentelemetry-collector.process-compose = {
-    depends_on.clickhouse-server.condition = "process_healthy";
+  services.clickhouse = {
+    enable = true;
   };
+
+  tasks."app:create-database" = {
+    description = "Create the ClickHouse database before launching OpenTelemetry Collector";
+    exec = ''
+      clickhouse client --port ${toString allocatedPort} "CREATE DATABASE IF NOT EXISTS ${dbName}"
+    '';
+    after = [ "devenv:processes:clickhouse-server" ];
+    before = [ "devenv:processes:opentelemetry-collector" ];
+  };
+
+  processes.opentelemetry-collector.after = [ "devenv:processes:clickhouse-server" ];
 
   services.opentelemetry-collector = {
     enable = true;
@@ -32,9 +45,9 @@
 
       exporters = {
         clickhouse = {
-          endpoint = "tcp://127.0.0.1:9000?dial_timeout=10s&compress=lz4";
-          database = "otel";
-          ttl_days = 3;
+          endpoint = clickhouseEndpoint;
+          database = dbName;
+          ttl = "72h";
           logs_table_name = "otel_logs";
           traces_table_name = "otel_traces";
           metrics_table_name = "otel_metrics";

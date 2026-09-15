@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -ex
 
-wait_for_port 9325 60
+wait_for_port 9324 60
 
-QUEUE_NAME=$(curl http://localhost:9325/statistics/queues -s | jq .[].name -r)
+curl -sf http://localhost:9324/health
 
-if [[ "$QUEUE_NAME" != "test-queue" ]]; then
+QUEUE_URL=$(curl -s "http://localhost:9324/?Action=ListQueues" | grep -o '<QueueUrl>[^<]*</QueueUrl>' | sed 's/<[^>]*>//g')
+
+if [[ "$QUEUE_URL" != *"/test-queue" ]]; then
   echo "The queue is not created"
   exit 1
 fi

@@ -24,7 +24,7 @@ let
 
   version = builtins.replaceStrings [ "." ] [ "" ] cfg.version;
 
-  runtimeDir = config.env.DEVENV_STATE + "/php-fpm";
+  runtimeDir = config.env.DEVENV_RUNTIME + "/php-fpm";
 
   toStr = value:
     if true == value then "yes"
@@ -41,12 +41,12 @@ let
     ${optionalString (poolOpts.extraConfig != null) poolOpts.extraConfig}
   '';
 
+  logDir = config.env.DEVENV_STATE + "/php-fpm";
+
   startScript = pool: poolOpts: ''
     set -euo pipefail
 
-    if [[ ! -d "$PHPFPMDIR" ]]; then
-      mkdir -p "$PHPFPMDIR"
-    fi
+    mkdir -p "${runtimeDir}" "${logDir}"
 
     exec ${poolOpts.phpPackage}/bin/php-fpm -F -y ${fpmCfgFile pool poolOpts} -c ${phpIni poolOpts}
   '';
@@ -230,6 +230,16 @@ in
       '';
     };
 
+    lsp = {
+      enable = lib.mkEnableOption "PHP Language Server" // { default = true; };
+      package = lib.mkOption {
+        type = lib.types.package;
+        default = pkgs.phpactor;
+        defaultText = lib.literalExpression "pkgs.phpactor";
+        description = "The PHP language server package to use.";
+      };
+    };
+
     fpm = {
       settings = mkOption {
         type = with types; attrsOf (oneOf [ str int bool ]);
@@ -317,7 +327,8 @@ in
 
       languages.php.extensions = lib.optionals config.services.rabbitmq.enable [ "amqp" ]
         ++ lib.optionals config.services.redis.enable [ "redis" ]
-        ++ lib.optionals config.services.blackfire.enable [ "blackfire" ];
+        ++ lib.optionals config.services.blackfire.enable [ "blackfire" ]
+        ++ lib.optionals config.services.tideways.enable [ "tideways" ];
 
       languages.php.ini = ''
         ${lib.optionalString config.services.mysql.enable ''
@@ -331,7 +342,8 @@ in
 
       packages = with pkgs; [
         cfg.package
-      ] ++ lib.optional (cfg.packages.composer != null) cfg.packages.composer;
+      ] ++ lib.optional (cfg.packages.composer != null) cfg.packages.composer
+      ++ lib.optional cfg.lsp.enable cfg.lsp.package;
 
       env.PHPFPMDIR = runtimeDir;
 

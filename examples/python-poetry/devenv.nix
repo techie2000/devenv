@@ -1,9 +1,17 @@
-{ pkgs, lib, config, ... }:
+{
+  pkgs,
+  lib,
+  config,
+  ...
+}:
 
 {
   packages = [
     # A python dependency outside of poetry.
     config.languages.python.package.pkgs.pjsua2
+    pkgs.zlib
+    # Build tools needed for compiling Python packages
+    pkgs.ninja
   ];
 
   languages.python = {

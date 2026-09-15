@@ -9,6 +9,13 @@ let
     attribute = "languages.solidity.foundry.package";
     follows = [ "nixpkgs" ];
   };
+
+  foundryPackage = foundry.defaultPackage.${pkgs.stdenv.system}.overrideAttrs (old: {
+    # Recent Foundry binaries link libudev, but foundry.nix does not yet add
+    # it to auto-patchelf's search path.
+    nativeBuildInputs = (old.nativeBuildInputs or [ ])
+      ++ lib.optional pkgs.stdenv.hostPlatform.isLinux pkgs.udev;
+  });
 in
 {
   options.languages.solidity = {
@@ -18,7 +25,7 @@ in
       type = lib.types.package;
       description = "Which compiler of Solidity to use.";
       default = pkgs.solc;
-      defaultText = lib.literalExpression "pkgs.elixir";
+      defaultText = lib.literalExpression "pkgs.solc";
     };
 
     foundry = {
@@ -27,7 +34,7 @@ in
       package = lib.mkOption {
         type = lib.types.package;
         description = "Which Foundry package to use.";
-        default = foundry.defaultPackage.${pkgs.stdenv.system};
+        default = foundryPackage;
         defaultText = lib.literalExpression "foundry.defaultPackage.$${pkgs.stdenv.system}";
       };
     };

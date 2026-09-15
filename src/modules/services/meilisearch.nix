@@ -4,10 +4,20 @@ let
   cfg = config.services.meilisearch;
   types = lib.types;
 
+  # Port allocation
+  basePort = cfg.listenPort;
+  allocatedPort = config.processes.meilisearch.ports.main.value;
 in
 {
   options.services.meilisearch = {
     enable = lib.mkEnableOption "Meilisearch";
+
+    package = lib.mkOption {
+      type = types.package;
+      description = "Which Meilisearch package to use";
+      default = pkgs.meilisearch;
+      defaultText = "pkgs.meilisearch";
+    };
 
     listenAddress = lib.mkOption {
       description = "Meilisearch listen address.";
@@ -65,18 +75,19 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    packages = [ pkgs.meilisearch ];
+    packages = [ cfg.package ];
 
     env.MEILI_DB_PATH = config.env.DEVENV_STATE + "/meilisearch";
-    env.MEILI_HTTP_ADDR = "${cfg.listenAddress}:${toString cfg.listenPort}";
-    env.MEILI_NO_ANALYTICS = toString cfg.noAnalytics;
+    env.MEILI_HTTP_ADDR = "${cfg.listenAddress}:${toString allocatedPort}";
+    env.MEILI_NO_ANALYTICS = lib.boolToString cfg.noAnalytics;
     env.MEILI_ENV = cfg.environment;
     env.MEILI_DUMP_DIR = config.env.MEILI_DB_PATH + "/dumps";
     env.MEILI_LOG_LEVEL = cfg.logLevel;
     env.MEILI_MAX_INDEX_SIZE = cfg.maxIndexSize;
 
     processes.meilisearch = {
-      exec = "${pkgs.meilisearch}/bin/meilisearch";
+      ports.main.allocate = basePort;
+      exec = "exec ${cfg.package}/bin/meilisearch";
     };
   };
 }

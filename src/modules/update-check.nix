@@ -1,18 +1,17 @@
-{ pkgs, lib, config, ... }:
+{ lib, config, ... }:
 
 let
   cfg = config.devenv;
-  action = {
-    "0" = "";
-    "1" = ''
-      echo "✨ devenv ${cfg.cliVersion} is newer than devenv input in devenv.lock. Run \`devenv update\` to sync."
-    '';
-    "-1" = ''
-      echo "✨ devenv ${cfg.cliVersion} is out of date. Please update to ${cfg.latestVersion}: https://devenv.sh/getting-started/#installation" >&2
-    '';
-  };
+  # Strip trailing .0 segments so that e.g. "2.1.0" compares equal to "2.1".
+  normalizeVersion = v:
+    let stripped = lib.removeSuffix ".0" v;
+    in if stripped != v then normalizeVersion stripped else v;
 in
 {
+  imports = [
+    (lib.mkAliasOptionModule [ "devenv" "cliVersion" ] [ "devenv" "cli" "version" ])
+  ];
+
   options.devenv = {
     flakesIntegration = lib.mkOption {
       type = lib.types.bool;
@@ -26,12 +25,32 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Whether to warn when a new version of devenv is available.
+        Whether to warn when a new version of either devenv or the direnv integration is available.
       '';
     };
-    cliVersion = lib.mkOption {
-      type = lib.types.str;
-      internal = true;
+    cli = {
+      version = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        internal = true;
+      };
+      isDevelopment = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        internal = true;
+        description = ''
+          Whether the CLI was built from a development (non-release) version.
+        '';
+      };
+      requireVersionMatch = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        internal = true;
+        description = ''
+          Whether require_version: true is set in devenv.yaml,
+          meaning the CLI version must match the modules version.
+        '';
+      };
     };
     latestVersion = lib.mkOption {
       type = lib.types.str;
@@ -40,9 +59,99 @@ in
         The latest version of devenv.
       '';
     };
+    direnvrcLatestVersion = lib.mkOption {
+      type = lib.types.int;
+      description = ''
+        The latest version of the direnv integration.
+      '';
+      internal = true;
+      default = 2;
+    };
   };
 
-  config = lib.mkIf cfg.warnOnNewVersion {
-    enterShell = action."${ toString (builtins.compareVersions cfg.cliVersion cfg.latestVersion) }";
+  config = {
+    assertions = lib.mkIf cfg.cli.requireVersionMatch [
+      {
+        assertion =
+          cfg.cli.version == null
+          || cfg.cli.isDevelopment
+          || normalizeVersion cfg.cli.version == normalizeVersion cfg.latestVersion;
+        message = ''
+          devenv CLI version ${cfg.cli.version} does not match the modules version ${cfg.latestVersion}.
+
+          require_version: true is set in devenv.yaml, which requires the CLI and modules versions to match.
+          Run 'devenv update' to sync the modules, or update your CLI to version ${cfg.latestVersion}.
+        '';
+      }
+    ];
+
+    enterShell = lib.mkIf cfg.warnOnNewVersion (
+      let
+        versionWarning =
+          if cfg.cli.version == null then ""
+          else
+            let
+              action = {
+                "0" = "";
+                "1" =
+                  if cfg.cli.isDevelopment then ""
+                  else ''
+                    echo "✨ devenv ${cfg.cli.version} is newer than devenv input (${cfg.latestVersion}) in devenv.lock. Run 'devenv update' to sync." >&2
+                  '';
+                "-1" = ''
+                  echo "✨ devenv ${cfg.cli.version} is out of date. Please update to ${cfg.latestVersion}: https://devenv.sh/getting-started/#installation" >&2
+                '';
+              };
+              normalizedCliVersion = normalizeVersion cfg.cli.version;
+              normalizedLatestVersion = normalizeVersion cfg.latestVersion;
+              versionComparison = builtins.compareVersions normalizedCliVersion normalizedLatestVersion;
+            in
+            action."${toString versionComparison}";
+      in
+      ''
+        ${versionWarning}
+
+        # Check whether the direnv integration is out of date.
+        {
+          if [[ ":''${DIRENV_ACTIVE-}:" == *":${cfg.root}:"* ]]; then
+            if [[ ! "''${DEVENV_NO_DIRENVRC_OUTDATED_WARNING-}" == 1 && ! "''${DEVENV_DIRENVRC_ROLLING_UPGRADE-}" == 1 ]]; then
+              if [[ ''${DEVENV_DIRENVRC_VERSION:-0} -lt ${toString cfg.direnvrcLatestVersion} ]]; then
+                direnv_line=$(grep --color=never -E "source_url.*cachix/devenv" .envrc || echo "")
+
+                echo "✨ The direnv integration in your .envrc is out of date."
+                echo ""
+                echo -n "RECOMMENDED: devenv can now auto-upgrade the direnv integration. "
+                if [[ -n "$direnv_line" ]]; then
+                  echo "To enable this feature, replace the following line in your .envrc:"
+                  echo ""
+                  echo "  $direnv_line"
+                  echo ""
+                  echo "with:"
+                  echo ""
+                  echo "  eval \"\$(devenv direnvrc)\""
+                else
+                  echo "To enable this feature, replace the \`source_url\` line that fetches the direnvrc integration in your .envrc with:"
+                  echo ""
+                  echo "  eval \"$(devenv direnvrc)\""
+                fi
+                echo ""
+                  echo "If you prefer to continue managing the integration manually, follow the upgrade instructions at https://devenv.sh/integrations/direnv/."
+                  echo ""
+                  echo "To disable this message:"
+                  echo ""
+                  echo "  Add the following environment to your .envrc before \`use devenv\`:"
+                  echo ""
+                  echo "    export DEVENV_NO_DIRENVRC_OUTDATED_WARNING=1"
+                  echo ""
+                  echo "  Or set the following option in your devenv configuration:"
+                  echo ""
+                  echo "    devenv.warnOnNewVersion = false;"
+                  echo ""
+              fi
+            fi
+          fi
+        } >&2
+      ''
+    );
   };
 }

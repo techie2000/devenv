@@ -32,16 +32,16 @@ in
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.nginx;
-      defaultText = "pkgs.nginx";
+      defaultText = lib.literalExpression "pkgs.nginx";
       description = "The nginx package to use.";
     };
 
     defaultMimeTypes = lib.mkOption {
       type = lib.types.path;
       default = "${pkgs.mailcap}/etc/nginx/mime.types";
-      defaultText = lib.literalExpression "$''{pkgs.mailcap}/etc/nginx/mime.types";
-      example = lib.literalExpression "$''{pkgs.nginx}/conf/mime.types";
-      description = lib.mdDoc ''
+      defaultText = lib.literalExpression "\${pkgs.mailcap}/etc/nginx/mime.types";
+      example = lib.literalExpression "\${pkgs.nginx}/conf/mime.types";
+      description = ''
         Default MIME types for NGINX, as MIME types definitions from NGINX are very incomplete,
         we use by default the ones bundled in the mailcap package, used by most of the other
         Linux distributions.
@@ -69,7 +69,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    processes.nginx.exec = "${cfg.package}/bin/nginx -c ${cfg.configFile} -e /dev/stderr";
+    processes.nginx.exec = "exec ${cfg.package}/bin/nginx -c ${cfg.configFile} -e /dev/stderr";
 
     enterShell = ''
       mkdir -p ${config.env.DEVENV_STATE}/nginx

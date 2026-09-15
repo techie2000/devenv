@@ -7,6 +7,14 @@ let
 
   inherit (builtins) concatStringsSep;
 
+  # Port allocation
+  basePort = cfg.port;
+  baseManagementPort = cfg.managementPlugin.port;
+  allocatedPort = config.processes.rabbitmq.ports.main.value;
+  allocatedManagementPort = config.processes.rabbitmq.ports.management.value;
+  allocatedDistributionPort = config.processes.rabbitmq.ports.distribution.value;
+  allocatedEpmdPort = config.processes.rabbitmq.ports.epmd.value;
+
   config_file_content = lib.generators.toKeyValue { } cfg.configItems;
   config_file = pkgs.writeText "rabbitmq.conf" config_file_content;
 
@@ -132,53 +140,78 @@ in
         default = 15672;
         type = types.port;
         description = ''
-          On which port to run the management plugin
+          On which port to run the management plugin.
         '';
       };
     };
   };
 
-  config = mkIf cfg.enable {
-    packages = [ cfg.package ];
+  config = mkMerge [
+    {
+      changelogs = [
+        {
+          date = "2026-04-11";
+          title = "services.rabbitmq: allocate distribution and EPMD ports dynamically";
+          when = cfg.enable;
+          description = ''
+            RabbitMQ's Erlang distribution port and EPMD port now use devenv's dynamic port allocation,
+            just like the AMQP and management listeners.
 
-    services.rabbitmq.configItems = {
-      "listeners.tcp.1" = mkDefault "${cfg.listenAddress}:${toString cfg.port}";
-      "distribution.listener.interface" = mkDefault cfg.listenAddress;
-    } // optionalAttrs cfg.managementPlugin.enable {
-      "management.tcp.port" = toString cfg.managementPlugin.port;
-      "management.tcp.ip" = cfg.listenAddress;
-    };
+            This avoids hardcoded use of ports `25672` and `4369`, which could previously cause port collisions
+            when running multiple environments.
+          '';
+        }
+      ];
+    }
+    (mkIf cfg.enable {
+      packages = [ cfg.package ];
 
-    services.rabbitmq.plugins =
-      optional cfg.managementPlugin.enable "rabbitmq_management";
+      services.rabbitmq.configItems = {
+        "listeners.tcp.1" = mkDefault "${cfg.listenAddress}:${toString allocatedPort}";
+        "distribution.listener.interface" = mkDefault cfg.listenAddress;
+      } // optionalAttrs cfg.managementPlugin.enable {
+        "management.tcp.port" = toString allocatedManagementPort;
+        "management.tcp.ip" = cfg.listenAddress;
+      };
 
-    env.RABBITMQ_DATA_DIR = config.env.DEVENV_STATE + "/rabbitmq";
-    env.RABBITMQ_MNESIA_BASE = config.env.RABBITMQ_DATA_DIR + "/mnesia";
-    env.RABBITMQ_LOGS = "-";
-    env.RABBITMQ_LOG_BASE = config.env.RABBITMQ_DATA_DIR + "/logs";
-    env.RABBITMQ_CONFIG_FILE = config_file;
-    env.RABBITMQ_PLUGINS_DIR = concatStringsSep ":" cfg.pluginDirs;
-    env.RABBITMQ_ENABLED_PLUGINS_FILE = plugin_file;
-    env.RABBITMQ_NODENAME = cfg.nodeName;
-    env.RABBITMQ_HOST = cfg.listenAddress;
-    env.ERL_EPMD_ADDRESS = cfg.listenAddress;
+      services.rabbitmq.plugins =
+        optional cfg.managementPlugin.enable "rabbitmq_management";
 
-    processes.rabbitmq = {
-      exec = "${cfg.package}/bin/rabbitmq-server";
+      env.RABBITMQ_DATA_DIR = config.env.DEVENV_STATE + "/rabbitmq";
+      env.RABBITMQ_MNESIA_BASE = config.env.RABBITMQ_DATA_DIR + "/mnesia";
+      env.RABBITMQ_LOGS = "-";
+      env.RABBITMQ_LOG_BASE = config.env.RABBITMQ_DATA_DIR + "/logs";
+      env.RABBITMQ_CONFIG_FILE = config_file;
+      env.RABBITMQ_PLUGINS_DIR = concatStringsSep ":" cfg.pluginDirs;
+      env.RABBITMQ_ENABLED_PLUGINS_FILE = plugin_file;
+      env.RABBITMQ_NODENAME = cfg.nodeName;
+      env.RABBITMQ_HOST = cfg.listenAddress;
+      env.RABBITMQ_DIST_PORT = toString allocatedDistributionPort;
+      env.RABBITMQ_PORT = toString allocatedPort;
+      env.ERL_EPMD_ADDRESS = cfg.listenAddress;
+      env.ERL_EPMD_PORT = toString allocatedEpmdPort;
 
-      process-compose = {
-        readiness_probe = {
-          exec.command = "${cfg.package}/bin/rabbitmq-diagnostics -q ping";
-          initial_delay_seconds = 10;
-          period_seconds = 3;
-          timeout_seconds = 3;
-          success_threshold = 1;
+      processes.rabbitmq = {
+        ports.main.allocate = basePort;
+        ports.management.allocate = baseManagementPort;
+        ports.distribution.allocate = basePort + 20000;
+        ports.epmd.allocate = 4369;
+        exec = "exec ${cfg.package}/bin/rabbitmq-server";
+
+        ready = {
+          # `check_running` succeeds only after the `rabbit` Erlang application
+          # has fully started, which catches plugin boot failures that `ping`
+          # (TCP/Erlang VM only) silently ignores.
+          exec = "${cfg.package}/bin/rabbitmq-diagnostics -q check_running";
+          initial_delay = 10;
+          period = 3;
+          probe_timeout = 5;
           failure_threshold = 5;
         };
-
-        # https://github.com/F1bonacc1/process-compose#-auto-restart-if-not-healthy
-        availability.restart = "on_failure";
       };
-    };
-  };
+    })
+    (mkIf (cfg.enable && cfg.managementPlugin.enable) {
+      env.RABBITMQ_MANAGEMENT_PORT = toString allocatedManagementPort;
+    })
+  ];
 }

@@ -5,9 +5,17 @@ with lib;
 let
   cfg = config.services.redis;
 
+  # Port allocation (port 0 means unix socket only)
+  basePort = cfg.port;
+  allocatedPort = if cfg.port == 0 then 0 else config.processes.redis.ports.main.value;
+
+  REDIS_UNIX_SOCKET = "${config.env.DEVENV_RUNTIME}/redis.sock";
+
   redisConfig = pkgs.writeText "redis.conf" ''
-    port ${toString cfg.port}
+    port ${toString allocatedPort}
     ${optionalString (cfg.bind != null) "bind ${cfg.bind}"}
+    ${optionalString (allocatedPort == 0) "unixsocket ${REDIS_UNIX_SOCKET}"}
+    ${optionalString (allocatedPort == 0) "unixsocketperm 700"}
     ${cfg.extraConfig}
   '';
 
@@ -18,8 +26,11 @@ let
       mkdir -p "$REDISDATA"
     fi
 
-    exec ${cfg.package}/bin/redis-server ${redisConfig} --dir "$REDISDATA"
+    exec ${cfg.package}/bin/redis-server ${redisConfig} --daemonize no --dir "$REDISDATA"
   '';
+
+  tcpPing = "${cfg.package}/bin/redis-cli -p ${toString allocatedPort} ping";
+  unixSocketPing = "${cfg.package}/bin/redis-cli -s ${REDIS_UNIX_SOCKET} ping";
 in
 {
   imports = [
@@ -51,7 +62,7 @@ in
       default = 6379;
       description = ''
         The TCP port to accept connections.
-        If port 0 is specified Redis, will not listen on a TCP socket.
+        If port 0 is specified, Redis will not listen on a TCP socket and a unix socket file will be found at $REDIS_UNIX_SOCKET.
       '';
     };
 
@@ -67,23 +78,22 @@ in
       cfg.package
     ];
 
-    env.REDISDATA = config.env.DEVENV_STATE + "/redis";
+    env = {
+      REDISDATA = config.env.DEVENV_STATE + "/redis";
+      REDIS_UNIX_SOCKET = if allocatedPort == 0 then REDIS_UNIX_SOCKET else null;
+    };
 
     processes.redis = {
+      ports = lib.mkIf (cfg.port != 0) {
+        main.allocate = basePort;
+      };
       exec = "${startScript}/bin/start-redis";
 
-      process-compose = {
-        readiness_probe = {
-          exec.command = "${cfg.package}/bin/redis-cli -p ${toString cfg.port} ping";
-          initial_delay_seconds = 2;
-          period_seconds = 10;
-          timeout_seconds = 4;
-          success_threshold = 1;
-          failure_threshold = 5;
-        };
-
-        # https://github.com/F1bonacc1/process-compose#-auto-restart-if-not-healthy
-        availability.restart = "on_failure";
+      ready = {
+        exec = if allocatedPort == 0 then unixSocketPing else tcpPing;
+        initial_delay = 2;
+        probe_timeout = 4;
+        failure_threshold = 5;
       };
     };
   };

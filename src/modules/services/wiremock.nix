@@ -2,8 +2,13 @@
 with lib;
 let
   cfg = config.services.wiremock;
+
+  # Port allocation
+  basePort = cfg.port;
+  allocatedPort = config.processes.wiremock.ports.main.value;
+
   mappingsFormat = pkgs.formats.json { };
-  rootDir = pkgs.linkFarm "wiremock-root" [
+  generatedRootDir = pkgs.linkFarm "wiremock-root" [
     {
       name = "mappings/mappings.json";
       path = mappingsFormat.generate "mappings.json" {
@@ -11,6 +16,7 @@ let
       };
     }
   ];
+  effectiveRootDir = if cfg.rootDir != null then cfg.rootDir else generatedRootDir;
 in
 {
   options.services.wiremock = {
@@ -24,7 +30,7 @@ in
       '';
     };
     port = mkOption {
-      type = types.int;
+      type = types.port;
       default = 8080;
       description = ''
         The port number for the HTTP server to listen on.
@@ -42,6 +48,15 @@ in
       default = false;
       description = ''
         Whether to log verbosely to stdout.
+      '';
+    };
+    rootDir = mkOption {
+      type = types.nullOr types.path;
+      default = null;
+      description = ''
+        Path to the WireMock root directory containing mappings and files.
+        Cannot be set together with `mappings`.
+        See <https://wiremock.org/docs/standalone/java-jar/#command-line-options> for more information.
       '';
     };
     mappings = mkOption {
@@ -80,17 +95,24 @@ in
   };
 
   config = mkIf cfg.enable {
+    assertions = [
+      {
+        assertion = !(cfg.rootDir != null && cfg.mappings != [ ]);
+        message = "services.wiremock: 'rootDir' and 'mappings' cannot be set at the same time.";
+      }
+    ];
+    processes.wiremock.ports.main.allocate = basePort;
     processes.wiremock.exec =
       let
         arguments = [
-          "--port ${toString cfg.port}"
-          "--root-dir ${rootDir}"
+          "--port ${toString allocatedPort}"
+          "--root-dir ${effectiveRootDir}"
         ]
         ++ lib.optional cfg.disableBanner "--disable-banner"
         ++ lib.optional cfg.verbose "--verbose";
       in
       ''
-        ${cfg.package}/bin/wiremock ${lib.concatStringsSep " " arguments} "$@"
+        exec ${cfg.package}/bin/wiremock ${lib.concatStringsSep " " arguments} "$@"
       '';
   };
 }
